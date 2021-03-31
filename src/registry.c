@@ -48,7 +48,7 @@ NTSTATUS registry_load_volume_options(device_extension* Vcb) {
     options->compress = mount_compress;
     options->compress_force = mount_compress_force;
     options->compress_type = mount_compress_type > BTRFS_COMPRESSION_ZSTD ? 0 : mount_compress_type;
-    options->readonly = mount_readonly;
+    options->readonly = 1; //mount_readonly;
     options->zlib_level = mount_zlib_level;
     options->zstd_level = mount_zstd_level;
     options->flush_interval = mount_flush_interval;
@@ -810,7 +810,7 @@ void read_registry(PUNICODE_STRING regpath, bool refresh) {
     get_registry_value(h, L"NoTrim", REG_DWORD, &mount_no_trim, sizeof(mount_no_trim));
     get_registry_value(h, L"ClearCache", REG_DWORD, &mount_clear_cache, sizeof(mount_clear_cache));
     get_registry_value(h, L"AllowDegraded", REG_DWORD, &mount_allow_degraded, sizeof(mount_allow_degraded));
-    get_registry_value(h, L"Readonly", REG_DWORD, &mount_readonly, sizeof(mount_readonly));
+    get_registry_value(h, L"Readonly", REG_DWORD, &mount_readonly, sizeof(mount_readonly)); mount_readonly = 1;
     get_registry_value(h, L"ZstdLevel", REG_DWORD, &mount_zstd_level, sizeof(mount_zstd_level));
     get_registry_value(h, L"NoRootDir", REG_DWORD, &mount_no_root_dir, sizeof(mount_no_root_dir));
 
