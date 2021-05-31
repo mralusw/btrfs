@@ -166,7 +166,13 @@ if(MSVC)
     string(REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
     string(REGEX REPLACE "/RTC(su|[1su])" "" CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG}")
 else()
-    target_compile_options(btrfs PUBLIC -Wall -Werror-implicit-function-declaration -Werror=cast-function-type -Werror=incompatible-pointer-types -Wno-expansion-to-defined -Wunused-parameter -Wold-style-declaration -Wtype-limits -Wextra)
+    target_compile_options(btrfs PUBLIC -Wall -Werror-implicit-function-declaration -Werror=incompatible-pointer-types -Wno-expansion-to-defined -Wunused-parameter -Wtype-limits -Wextra)
+
+    if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(btrfs PUBLIC -Werror=cast-function-type -Wold-style-declaration)
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        target_compile_options(btrfs PUBLIC -Wno-pragma-pack) # ignore warning in mingw headers
+    endif()
 
     target_link_libraries(btrfs ntoskrnl hal gcc)
     target_link_options(btrfs PUBLIC -nostdlib -Wl,--subsystem,native -Wl,--file-alignment,0x1000 -Wl,--section-alignment,0x1000 -Wl,--exclude-all-symbols)
@@ -221,6 +227,7 @@ add_library(shellbtrfs SHARED ${SHELLEXT_SRC_FILES})
 
 if(NOT MSVC)
     target_link_options(shellbtrfs PUBLIC -static -static-libgcc)
+    target_link_libraries(shellbtrfs pthread)
 else()
     target_compile_options(shellbtrfs PUBLIC /EHsc)
     target_link_options(shellbtrfs PUBLIC /MANIFEST:NO)
@@ -270,6 +277,10 @@ endif()
 
 target_compile_definitions(ubtrfs PUBLIC _USRDLL)
 target_link_libraries(ubtrfs ntdll advapi32)
+
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(ubtrfs PUBLIC -Wno-pragma-pack) # ignore warning in mingw headers
+endif()
 
 if(MSVC AND CMAKE_SYSTEM_PROCESSOR STREQUAL "x86")
     target_compile_options(ubtrfs PUBLIC /Gz) # stdcall
