@@ -1,4 +1,4 @@
-WinBtrfs v1.7.6
+WinBtrfs v1.7.7
 ---------------
 
 WinBtrfs is a Windows driver for the next-generation Linux filesystem Btrfs.
@@ -96,10 +96,8 @@ To install the driver, [download and extract the latest release](https://github.
 right-click btrfs.inf, and choose Install. The driver is signed, so should work out
 of the box on modern versions of Windows.
 
-For the very latest versions of Windows 10, Microsoft introduced more onerous
-requirements for signing, which are only available to corporations and not individuals.
-If this affects you (i.e. you get a signing error when trying to install the driver),
-try disabling Secure Boot in your BIOS settings.
+If you using Windows 10 and have Secure Boot enabled, you may have to make a Registry
+change in order for the driver to be loaded - see [below](#secureboot).
 
 There's also a [Chocolatey package](https://chocolatey.org/packages/winbtrfs) available -
 if you have Chocolatey installed, try running `choco install winbtrfs`.
@@ -155,8 +153,8 @@ LXSS ("Ubuntu on Windows" / "Windows Subsystem for Linux")
 ----------------------------------------------------------
 
 The driver will passthrough Linux metadata to recent versions of LXSS, but you
-will have to let Windows that you wish to do this. From a Bash prompt on Windows,
-edit `/etc/wsl.conf` to look like the following:
+will have to let Windows know that you wish to do this. From a Bash prompt on
+Windows, edit `/etc/wsl.conf` to look like the following:
 
 ```
 [automount]
@@ -201,6 +199,14 @@ clone subvolumes.
 Troubleshooting
 ---------------
 
+* How do I debug this?
+
+On the releases page, there's zip files to download containing the PDBs. Or you
+can try the symbols server http://symbols.burntcomma.com/ - in windbg, set your
+symbol path to something like this:
+
+```symsrv*symsrv.dll*C:\symbols*http://msdl.microsoft.com/download/symbols;symsrv*symsrv.dll*C:\symbols*http://symbols.burntcomma.com```
+
 * The filenames are weird!
 or
 * I get strange errors on certain files or directories!
@@ -208,6 +214,16 @@ or
 The driver assumes that all filenames are encoded in UTF-8. This should be the
 default on most setups nowadays - if you're not using UTF-8, it's probably worth
 looking into converting your files.
+
+* <a name="secureboot"></a>How do I get this working with Secure Boot turned on?
+
+For the very latest versions of Windows 10, Microsoft introduced more onerous
+requirements for signing, which seemingly aren't available for open-source drivers.
+
+To work around this, go to `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\CI\Policy` in Regedit,
+create a new DWORD value called `UpgradedSystem` and set to 1, and reboot.
+
+Or you could always just turn off Secure Boot in your BIOS settings.
 
 * The root of the drive isn't case-sensitive in LXSS
 
@@ -249,6 +265,12 @@ partition type from 83 to 7.
 
 Changelog
 ---------
+
+v1.7.7 (2021-04-12):
+* Fixed deadlock on high load
+* Fixed free space issue when installing Genshin Impact
+* Fixed issue when copying files with wildcards in command prompt
+* Increased speed of directory lookups
 
 v1.7.6 (2021-01-14):
 * Fixed race condition when booting with Quibble
@@ -556,6 +578,9 @@ via the usual Plug and Play method.
 * `ZstdLevel` (DWORD): Zstd compression level, default 3.
 
 * `NoTrim` (DWORD): set this to 1 to disable TRIM support.
+
+* `AllowDegraded` (DWORD): set this to 1 to allow mounting a degraded volume, i.e. one with a device
+missing. You are strongly advised not to enable this unless you need to.
 
 * `NoRootDir` (DWORD): if you have changed your default subvolume, either natively or by a registry option,
 there will be a hidden directory called $Root which points to where the root would normally be. Set this
