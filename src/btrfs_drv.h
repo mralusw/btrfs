@@ -1126,7 +1126,6 @@ void reap_fcb(fcb* fcb);
 void reap_fcbs(device_extension* Vcb);
 void reap_fileref(device_extension* Vcb, file_ref* fr);
 void reap_filerefs(device_extension* Vcb, file_ref* fr);
-uint64_t chunk_estimate_phys_size(device_extension* Vcb, chunk* c, uint64_t u);
 NTSTATUS utf8_to_utf16(WCHAR* dest, ULONG dest_max, ULONG* dest_len, char* src, ULONG src_len);
 NTSTATUS utf16_to_utf8(char* dest, ULONG dest_max, ULONG* dest_len, WCHAR* src, ULONG src_len);
 uint32_t get_num_of_processors();
@@ -1291,15 +1290,16 @@ void __stdcall mountmgr_thread(_In_ void* context);
 _Function_class_(DRIVER_NOTIFICATION_CALLBACK_ROUTINE)
 NTSTATUS __stdcall pnp_notification(PVOID NotificationStructure, PVOID Context);
 
-void disk_arrival(PDRIVER_OBJECT DriverObject, PUNICODE_STRING devpath);
-void volume_arrival(PDRIVER_OBJECT DriverObject, PUNICODE_STRING devpath);
-void volume_removal(PDRIVER_OBJECT DriverObject, PUNICODE_STRING devpath);
+void disk_arrival(PUNICODE_STRING devpath);
+bool volume_arrival(PUNICODE_STRING devpath, bool fve_callback);
+void volume_removal(PUNICODE_STRING devpath);
 
 _Function_class_(DRIVER_NOTIFICATION_CALLBACK_ROUTINE)
 NTSTATUS __stdcall volume_notification(PVOID NotificationStructure, PVOID Context);
 
 void remove_volume_child(_Inout_ _Requires_exclusive_lock_held_(_Curr_->child_lock) _Releases_exclusive_lock_(_Curr_->child_lock) _In_ volume_device_extension* vde,
                          _In_ volume_child* vc, _In_ bool skip_dev);
+extern KSPIN_LOCK fve_data_lock;
 
 // in cache.c
 void init_cache();

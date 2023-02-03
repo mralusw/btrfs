@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(btrfs VERSION 1.7.7)
+project(btrfs VERSION 1.8.0)
+
+option(WITH_TEST "Compile test program" ON)
 
 # btrfs.sys
 
@@ -106,14 +108,6 @@ endif()
 
 configure_file(src/btrfs.rc.in btrfs.rc)
 
-add_library(btrfs SHARED ${SRC_FILES})
-
-if(MSVC)
-    include_directories("$ENV{WindowsSdkDir}Include\\$ENV{WindowsSDKLibVersion}km")
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
-    include_directories("${CMAKE_FIND_ROOT_PATH}/usr/include/ddk")
-endif()
-
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     add_definitions(-D_AMD64_)
     set(MS_ARCH "x64")
@@ -127,6 +121,15 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     add_definitions(-D_ARM64_)
     set(MS_ARCH "arm64")
 endif()
+
+if(MSVC)
+    include_directories("$ENV{WindowsSdkDir}Include\\$ENV{WindowsSDKLibVersion}km")
+    link_directories("$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+    include_directories("${CMAKE_FIND_ROOT_PATH}/usr/include/ddk")
+endif()
+
+add_library(btrfs SHARED ${SRC_FILES})
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_definitions(-D_DEBUG)
@@ -144,22 +147,21 @@ if(MSVC)
         target_compile_options(btrfs PUBLIC /Gz) # stdcall
     endif()
 
-    target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}\\ntoskrnl.lib")
-    target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}\\hal.lib")
+    target_link_libraries(btrfs ntoskrnl hal)
 
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}\\bufferoverflowfastfailk.lib")
+        target_link_libraries(btrfs bufferoverflowfastfailk)
     else()
-        target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}\\BufferOverflowK.lib")
+        target_link_libraries(btrfs BufferOverflowK)
     endif()
 
     if(CMAKE_SYSTEM_PROCESSOR STREQUAL "arm")
-        target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}um\\${MS_ARCH}\\armrt.lib")
+        target_link_libraries(btrfs armrt)
     elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-        target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}um\\${MS_ARCH}\\arm64rt.lib")
+        target_link_libraries(btrfs arm64rt)
     endif()
 
-    target_link_libraries(btrfs "$ENV{WindowsSdkDir}Lib\\$ENV{WindowsSDKLibVersion}km\\${MS_ARCH}\\rtlver.lib")
+    target_link_libraries(btrfs rtlver)
     target_link_options(btrfs PUBLIC /SUBSYSTEM:NATIVE /NODEFAULTLIB /MANIFEST:NO /Driver /ENTRY:DriverEntry)
 
     # strip out flags for MSVC's runtime checks
@@ -307,6 +309,59 @@ if(MSVC)
     set_property(TARGET mkbtrfs PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     target_link_options(mkbtrfs PUBLIC -static -static-libgcc)
+endif()
+
+# --------------------------------------
+
+# test.exe
+
+if(WITH_TEST)
+    if(MSVC AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.21)
+        set(CMAKE_CXX_STANDARD 23) # /std:c++latest
+    else()
+        set(CMAKE_CXX_STANDARD 20)
+    endif()
+
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+    if(NOT MSVC OR MSVC_VERSION LESS 1929)
+        find_package(fmt REQUIRED)
+    endif()
+
+    configure_file(src/tests/test.rc.in test.rc)
+
+    set(TEST_SRC_FILES src/tests/test.cpp
+        ${CMAKE_CURRENT_BINARY_DIR}/test.rc
+        src/tests/create.cpp
+        src/tests/supersede.cpp
+        src/tests/overwrite.cpp
+        src/tests/io.cpp
+        src/tests/mmap.cpp
+        src/tests/rename.cpp
+        src/tests/delete.cpp
+        src/tests/links.cpp
+        src/tests/oplock.cpp
+        src/tests/cs.cpp
+        src/tests/reparse.cpp
+        src/tests/streams.cpp
+        src/tests/ea.cpp
+        src/tests/fileinfo.cpp
+        src/tests/security.cpp)
+
+    add_executable(test ${TEST_SRC_FILES})
+
+    if(MSVC)
+        set_property(TARGET test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    else()
+        target_link_options(test PUBLIC -static -static-libgcc -municode)
+        target_compile_options(test PUBLIC -Wall -Wno-expansion-to-defined -Wunused-parameter -Wtype-limits -Wextra)
+    endif()
+
+    target_link_libraries(test ntdll version advapi32)
+
+    if(NOT MSVC OR MSVC_VERSION LESS 1929)
+        target_link_libraries(test fmt::fmt-header-only)
+    endif()
 endif()
 
 # --------------------------------------

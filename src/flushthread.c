@@ -22,7 +22,10 @@
 #include <ntddscsi.h>
 #include <ntddstor.h>
 
-#define MAX_CSUM_SIZE (4096 - sizeof(tree_header) - sizeof(leaf_node))
+/* cf. __MAX_CSUM_ITEMS in Linux - it needs sizeof(leaf_node) bytes free
+ * so it can do a split. Linux tries to get it so a run will fit in a
+ * sector, but the MAX_CSUM_ITEMS logic is wrong... */
+#define MAX_CSUM_SIZE (4096 - sizeof(tree_header) - (2 * sizeof(leaf_node)))
 
 // #define DEBUG_WRITE_LOOPS
 
@@ -45,10 +48,6 @@ typedef struct {
 
 static NTSTATUS create_chunk(device_extension* Vcb, chunk* c, PIRP Irp);
 static NTSTATUS update_tree_extents(device_extension* Vcb, tree* t, PIRP Irp, LIST_ENTRY* rollback);
-
-#ifndef _MSC_VER // not in mingw yet
-#define DEVICE_DSM_FLAG_TRIM_NOT_FS_ALLOCATED 0x80000000
-#endif
 
 _Function_class_(IO_COMPLETION_ROUTINE)
 static NTSTATUS __stdcall write_completion(PDEVICE_OBJECT DeviceObject, PIRP Irp, PVOID conptr) {
@@ -2947,14 +2946,7 @@ static NTSTATUS update_chunk_usage(device_extension* Vcb, PIRP Irp, LIST_ENTRY* 
                 goto end;
             }
 
-            uint64_t old_phys_used = chunk_estimate_phys_size(Vcb, c, c->oldused);
-            uint64_t phys_used = chunk_estimate_phys_size(Vcb, c, c->used);
-
-            if (Vcb->superblock.bytes_used + phys_used > old_phys_used)
-                Vcb->superblock.bytes_used += phys_used - old_phys_used;
-            else
-                Vcb->superblock.bytes_used = 0;
-
+            Vcb->superblock.bytes_used += c->used - c->oldused;
             c->oldused = c->used;
         }
 
@@ -4302,7 +4294,7 @@ static NTSTATUS create_chunk(device_extension* Vcb, chunk* c, PIRP Irp) {
     c->created = false;
     c->oldused = c->used;
 
-    Vcb->superblock.bytes_used += chunk_estimate_phys_size(Vcb, c, c->used);
+    Vcb->superblock.bytes_used += c->used;
 
     return STATUS_SUCCESS;
 }
@@ -5689,12 +5681,7 @@ static NTSTATUS drop_chunk(device_extension* Vcb, chunk* c, LIST_ENTRY* batchlis
             Vcb->superblock.incompat_flags &= ~BTRFS_INCOMPAT_FLAGS_RAID1C34;
     }
 
-    uint64_t phys_used = chunk_estimate_phys_size(Vcb, c, c->oldused);
-
-    if (phys_used < Vcb->superblock.bytes_used)
-        Vcb->superblock.bytes_used -= phys_used;
-    else
-        Vcb->superblock.bytes_used = 0;
+    Vcb->superblock.bytes_used -= c->oldused;
 
     ExFreePool(c->chunk_item);
     ExFreePool(c->devices);

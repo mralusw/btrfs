@@ -82,6 +82,8 @@ typedef struct {
     device_extension* Vcb;
     ACCESS_MASK granted_access;
     file_ref* fileref;
+    NTSTATUS Status;
+    KEVENT event;
 } oplock_context;
 
 fcb* create_fcb(device_extension* Vcb, POOL_TYPE pool_type) {
@@ -1772,11 +1774,11 @@ NTSTATUS open_fileref(_Requires_lock_held_(_Curr_->tree_lock) _Requires_exclusiv
         name_bit* nb;
 
         nb = CONTAINING_RECORD(RemoveTailList(&parts), name_bit, list_entry);
-        ExFreePool(nb);
+        ExFreeToPagedLookasideList(&Vcb->name_bit_lookaside, nb);
 
         if (has_stream && !IsListEmpty(&parts)) {
             nb = CONTAINING_RECORD(RemoveTailList(&parts), name_bit, list_entry);
-            ExFreePool(nb);
+            ExFreeToPagedLookasideList(&Vcb->name_bit_lookaside, nb);
 
             has_stream = false;
         }
@@ -1874,6 +1876,8 @@ NTSTATUS add_dir_child(fcb* fcb, uint64_t inode, bool subvol, PANSI_STRING utf8,
         ERR("out of memory\n");
         return STATUS_INSUFFICIENT_RESOURCES;
     }
+
+    RtlZeroMemory(dc, sizeof(dir_child));
 
     dc->utf8.Buffer = ExAllocatePoolWithTag(PagedPool, utf8->Length, ALLOC_TAG);
     if (!dc->utf8.Buffer) {
@@ -2454,7 +2458,7 @@ static NTSTATUS file_create2(_In_ PIRP Irp, _Requires_exclusive_lock_held_(_Curr
 
     fileref->fcb = fcb;
 
-    if (Irp->Overlay.AllocationSize.QuadPart > 0 && !write_fcb_compressed(fcb)) {
+    if (Irp->Overlay.AllocationSize.QuadPart > 0 && !write_fcb_compressed(fcb) && fcb->type != BTRFS_TYPE_DIRECTORY) {
         Status = extend_file(fcb, fileref, Irp->Overlay.AllocationSize.QuadPart, true, NULL, rollback);
 
         if (!NT_SUCCESS(Status)) {
@@ -2658,12 +2662,16 @@ static NTSTATUS create_stream(_Requires_lock_held_(_Curr_->tree_lock) _Requires_
     if (parfileref->fcb == Vcb->dummy_fcb)
         return STATUS_ACCESS_DENIED;
 
+    Status = check_file_name_valid(stream, false, true);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
     Status = open_fileref(Vcb, &newpar, fpus, parfileref, false, NULL, NULL, PagedPool, case_sensitive, Irp);
 
     if (Status == STATUS_OBJECT_NAME_NOT_FOUND) {
         UNICODE_STRING fpus2;
 
-        Status = check_file_name_valid(fpus, false, true);
+        Status = check_file_name_valid(fpus, false, false);
         if (!NT_SUCCESS(Status))
             return Status;
 
@@ -3845,7 +3853,7 @@ static NTSTATUS open_file3(device_extension* Vcb, PIRP Irp, ACCESS_MASK granted_
     return STATUS_SUCCESS;
 }
 
-static void oplock_complete(PVOID Context, PIRP Irp) {
+static void __stdcall oplock_complete(PVOID Context, PIRP Irp) {
     NTSTATUS Status;
     LIST_ENTRY rollback;
     bool skip_lock;
@@ -3913,11 +3921,14 @@ static void oplock_complete(PVOID Context, PIRP Irp) {
     Irp->IoStatus.Status = Status;
     IoCompleteRequest(Irp, NT_SUCCESS(Status) ? IO_DISK_INCREMENT : IO_NO_INCREMENT);
 
-    ExFreePool(ctx);
+    ctx->Status = Status;
+
+    KeSetEvent(&ctx->event, 0, false);
 }
 
 static NTSTATUS open_file2(device_extension* Vcb, ULONG RequestedDisposition, file_ref* fileref, ACCESS_MASK* granted_access,
-                           PFILE_OBJECT FileObject, UNICODE_STRING* fn, ULONG options, PIRP Irp, LIST_ENTRY* rollback) {
+                           PFILE_OBJECT FileObject, UNICODE_STRING* fn, ULONG options, PIRP Irp, LIST_ENTRY* rollback,
+                           oplock_context** opctx) {
     NTSTATUS Status;
     file_ref* sf;
     bool readonly;
@@ -3980,6 +3991,8 @@ static NTSTATUS open_file2(device_extension* Vcb, ULONG RequestedDisposition, fi
         Status = STATUS_CANNOT_DELETE;
         goto end;
     }
+
+    readonly |= fileref->fcb->inode_item.flags_ro & BTRFS_INODE_RO_VERITY;
 
     if (readonly) {
         ACCESS_MASK allowed;
@@ -4079,10 +4092,13 @@ static NTSTATUS open_file2(device_extension* Vcb, ULONG RequestedDisposition, fi
         ctx->Vcb = Vcb;
         ctx->granted_access = *granted_access;
         ctx->fileref = fileref;
+        KeInitializeEvent(&ctx->event, NotificationEvent, false);
 
         Status = FsRtlCheckOplock(fcb_oplock(fileref->fcb), Irp, ctx, oplock_complete, NULL);
-        if (Status == STATUS_PENDING)
+        if (Status == STATUS_PENDING) {
+            *opctx = ctx;
             return Status;
+        }
 
         ExFreePool(ctx);
 
@@ -4437,7 +4453,8 @@ NTSTATUS open_fileref_by_inode(_Requires_exclusive_lock_held_(_Curr_->fcb_lock) 
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS open_file(PDEVICE_OBJECT DeviceObject, _Requires_lock_held_(_Curr_->tree_lock) device_extension* Vcb, PIRP Irp, LIST_ENTRY* rollback) {
+static NTSTATUS open_file(PDEVICE_OBJECT DeviceObject, _Requires_lock_held_(_Curr_->tree_lock) device_extension* Vcb, PIRP Irp,
+                          LIST_ENTRY* rollback, oplock_context** opctx) {
     PFILE_OBJECT FileObject = NULL;
     ULONG RequestedDisposition;
     ULONG options;
@@ -4671,9 +4688,10 @@ loaded:
         goto exit;
     }
 
-    if (NT_SUCCESS(Status)) // file already exists
-        Status = open_file2(Vcb, RequestedDisposition, fileref, &granted_access, FileObject, &fn, options, Irp, rollback);
-    else {
+    if (NT_SUCCESS(Status)) { // file already exists
+        Status = open_file2(Vcb, RequestedDisposition, fileref, &granted_access, FileObject, &fn,
+                            options, Irp, rollback, opctx);
+    } else {
         file_ref* existing_file = NULL;
 
         Status = file_create(Irp, Vcb, FileObject, related, loaded_related, &fn, RequestedDisposition, options, &existing_file, rollback);
@@ -4681,7 +4699,8 @@ loaded:
         if (Status == STATUS_OBJECT_NAME_COLLISION) { // already exists
             fileref = existing_file;
 
-            Status = open_file2(Vcb, RequestedDisposition, fileref, &granted_access, FileObject, &fn, options, Irp, rollback);
+            Status = open_file2(Vcb, RequestedDisposition, fileref, &granted_access, FileObject, &fn,
+                                options, Irp, rollback, opctx);
         } else {
             Irp->IoStatus.Information = NT_SUCCESS(Status) ? FILE_CREATED : 0;
             granted_access = IrpSp->Parameters.Create.SecurityContext->DesiredAccess;
@@ -4801,6 +4820,7 @@ NTSTATUS __stdcall drv_create(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
     PIO_STACK_LOCATION IrpSp;
     device_extension* Vcb = DeviceObject->DeviceExtension;
     bool top_level, locked = false;
+    oplock_context* opctx = NULL;
 
     FsRtlEnterFileSystem();
 
@@ -4979,7 +4999,7 @@ NTSTATUS __stdcall drv_create(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
 
         ExAcquireResourceSharedLite(&Vcb->fileref_lock, true);
 
-        Status = open_file(DeviceObject, Vcb, Irp, &rollback);
+        Status = open_file(DeviceObject, Vcb, Irp, &rollback, &opctx);
 
         if (!NT_SUCCESS(Status))
             do_rollback(Vcb, &rollback);
@@ -4993,17 +5013,21 @@ NTSTATUS __stdcall drv_create(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
     }
 
 exit:
-    Irp->IoStatus.Status = Status;
-
-    if (Status == STATUS_PENDING)
-        IoMarkIrpPending(Irp);
-    else
+    if (Status != STATUS_PENDING) {
+        Irp->IoStatus.Status = Status;
         IoCompleteRequest(Irp, NT_SUCCESS(Status) ? IO_DISK_INCREMENT : IO_NO_INCREMENT);
-
-    TRACE("create returning %08lx\n", Status);
+    }
 
     if (locked)
         ExReleaseResourceLite(&Vcb->load_lock);
+
+    if (Status == STATUS_PENDING) {
+        KeWaitForSingleObject(&opctx->event, Executive, KernelMode, false, NULL);
+        Status = opctx->Status;
+        ExFreePool(opctx);
+    }
+
+    TRACE("create returning %08lx\n", Status);
 
     if (top_level)
         IoSetTopLevelIrp(NULL);

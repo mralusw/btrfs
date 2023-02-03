@@ -633,18 +633,6 @@ static NTSTATUS query_dir_item(fcb* fcb, ccb* ccb, void* buf, LONG* len, PIRP Ir
             return STATUS_SUCCESS;
         }
 
-        case FileObjectIdInformation:
-            FIXME("STUB: FileObjectIdInformation\n");
-            return STATUS_NOT_IMPLEMENTED;
-
-        case FileQuotaInformation:
-            FIXME("STUB: FileQuotaInformation\n");
-            return STATUS_NOT_IMPLEMENTED;
-
-        case FileReparsePointInformation:
-            FIXME("STUB: FileReparsePointInformation\n");
-            return STATUS_NOT_IMPLEMENTED;
-
         default:
             WARN("Unknown FileInformationClass %u\n", IrpSp->Parameters.QueryDirectory.FileInformationClass);
             return STATUS_NOT_IMPLEMENTED;
@@ -719,6 +707,13 @@ static NTSTATUS next_dir_entry(file_ref* fileref, uint64_t* offset, dir_entry* d
 next:
     if (!dc)
         return STATUS_NO_MORE_FILES;
+
+    if (dc->root_dir && fileref->parent) { // hide $Root dir unless in apparent root, to avoid recursion
+        if (dc->list_entry_index.Flink == &fileref->fcb->dir_children_index)
+            return STATUS_NO_MORE_FILES;
+
+        dc = CONTAINING_RECORD(dc->list_entry_index.Flink, dir_child, list_entry_index);
+    }
 
     de->key = dc->key;
     de->name = dc->name;

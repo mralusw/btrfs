@@ -1639,12 +1639,18 @@ static NTSTATUS rename_stream_to_file(device_extension* Vcb, file_ref* fileref, 
     fileref->fcb->adsdata.Buffer = NULL;
     fileref->fcb->adsdata.Length = fileref->fcb->adsdata.MaximumLength = 0;
 
+    acquire_fcb_lock_exclusive(Vcb);
+
+    RemoveEntryList(&fileref->fcb->list_entry);
     InsertHeadList(ofr->fcb->list_entry.Blink, &fileref->fcb->list_entry);
 
     if (fileref->fcb->subvol->fcbs_ptrs[fileref->fcb->hash >> 24] == &ofr->fcb->list_entry)
         fileref->fcb->subvol->fcbs_ptrs[fileref->fcb->hash >> 24] = &fileref->fcb->list_entry;
 
     RemoveEntryList(&ofr->fcb->list_entry);
+
+    release_fcb_lock(Vcb);
+
     ofr->fcb->list_entry.Flink = ofr->fcb->list_entry.Blink = NULL;
 
     mark_fcb_dirty(fileref->fcb);
@@ -2286,7 +2292,7 @@ static NTSTATUS rename_file_to_stream(device_extension* Vcb, file_ref* fileref, 
 
     dc = ExAllocatePoolWithTag(PagedPool, sizeof(dir_child), ALLOC_TAG);
     if (!dc) {
-        ERR("short read\n");
+        ERR("out of memory\n");
         Status = STATUS_INSUFFICIENT_RESOURCES;;
         ExFreePool(utf8.Buffer);
         ExFreePool(utf16.Buffer);
@@ -2435,8 +2441,6 @@ static NTSTATUS rename_file_to_stream(device_extension* Vcb, file_ref* fileref, 
 
     mark_fileref_dirty(dummyfileref);
 
-    free_fileref(dummyfileref);
-
     // change fcb values
 
     fileref->fcb->hash_ptrs = NULL;
@@ -2521,8 +2525,9 @@ static NTSTATUS set_rename_information(device_extension* Vcb, PIRP Irp, PFILE_OB
     } else {
         LONG i;
 
-        while (fnlen > 0 && (fri->FileName[fnlen - 1] == '/' || fri->FileName[fnlen - 1] == '\\'))
+        while (fnlen > 0 && (fri->FileName[fnlen - 1] == '/' || fri->FileName[fnlen - 1] == '\\')) {
             fnlen--;
+        }
 
         if (fnlen == 0)
             return STATUS_INVALID_PARAMETER;
@@ -2581,13 +2586,9 @@ static NTSTATUS set_rename_information(device_extension* Vcb, PIRP Irp, PFILE_OB
 
     TRACE("fnus = %.*S\n", (int)(fnus.Length / sizeof(WCHAR)), fnus.Buffer);
 
-    for (unsigned int i = 0 ; i < fnus.Length / sizeof(WCHAR); i++) {
-        if (fnus.Buffer[i] == ':') {
-            TRACE("colon in filename\n");
-            Status = STATUS_OBJECT_NAME_INVALID;
-            goto end;
-        }
-    }
+    Status = check_file_name_valid(&fnus, false, false);
+    if (!NT_SUCCESS(Status))
+        goto end;
 
     origutf8len = fileref->dc->utf8.Length;
 
@@ -3404,8 +3405,9 @@ static NTSTATUS set_link_information(device_extension* Vcb, PIRP Irp, PFILE_OBJE
         tfofcb = tfo->FsContext;
         parfcb = tfofcb;
 
-        while (fnlen > 0 && (fli->FileName[fnlen - 1] == '/' || fli->FileName[fnlen - 1] == '\\'))
+        while (fnlen > 0 && (fli->FileName[fnlen - 1] == '/' || fli->FileName[fnlen - 1] == '\\')) {
             fnlen--;
+        }
 
         if (fnlen == 0)
             return STATUS_INVALID_PARAMETER;
@@ -3444,6 +3446,10 @@ static NTSTATUS set_link_information(device_extension* Vcb, PIRP Irp, PFILE_OBJE
     fnus.Length = fnus.MaximumLength = (uint16_t)(fnlen * sizeof(WCHAR));
 
     TRACE("fnus = %.*S\n", (int)(fnus.Length / sizeof(WCHAR)), fnus.Buffer);
+
+    Status = check_file_name_valid(&fnus, false, false);
+    if (!NT_SUCCESS(Status))
+        goto end;
 
     Status = utf16_to_utf8(NULL, 0, &utf8len, fn, (ULONG)fnlen * sizeof(WCHAR));
     if (!NT_SUCCESS(Status))
@@ -4526,6 +4532,12 @@ static NTSTATUS fill_in_hard_link_information(FILE_LINKS_INFORMATION* fli, file_
         ExAcquireResourceExclusiveLite(&fcb->Vcb->fileref_lock, true);
 
         if (IsListEmpty(&fcb->hardlinks)) {
+            if (!fileref->dc) {
+                ExReleaseResourceLite(&fcb->Vcb->fileref_lock);
+                Status = STATUS_INVALID_PARAMETER;
+                goto end;
+            }
+
             bytes_needed += sizeof(FILE_LINK_ENTRY_INFORMATION) + fileref->dc->name.Length - sizeof(WCHAR);
 
             if (bytes_needed > *length)
@@ -4564,7 +4576,7 @@ static NTSTATUS fill_in_hard_link_information(FILE_LINKS_INFORMATION* fli, file_
                     while (le2 != &parfr->children) {
                         file_ref* fr2 = CONTAINING_RECORD(le2, file_ref, list_entry);
 
-                        if (fr2->dc->index == hl->index) {
+                        if (fr2->dc && fr2->dc->index == hl->index) {
                             found = true;
                             deleted = fr2->deleted;
 
@@ -4625,6 +4637,7 @@ static NTSTATUS fill_in_hard_link_information(FILE_LINKS_INFORMATION* fli, file_
 
     Status = overflow ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
 
+end:
     ExReleaseResourceLite(fcb->Header.Resource);
 
     return Status;
@@ -5258,7 +5271,7 @@ static NTSTATUS query_info(device_extension* Vcb, PFILE_OBJECT FileObject, PIRP 
         {
             FILE_STAT_INFORMATION* fsi = Irp->AssociatedIrp.SystemBuffer;
 
-            if (IrpSp->Parameters.QueryFile.Length < sizeof(FILE_STAT_LX_INFORMATION)) {
+            if (IrpSp->Parameters.QueryFile.Length < sizeof(FILE_STAT_INFORMATION)) {
                 WARN("overflow\n");
                 Status = STATUS_BUFFER_OVERFLOW;
                 goto exit;
@@ -5455,10 +5468,12 @@ NTSTATUS __stdcall drv_query_ea(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
 
     ExAcquireResourceSharedLite(fcb->Header.Resource, true);
 
-    Status = STATUS_SUCCESS;
-
-    if (fcb->ea_xattr.Length == 0)
+    if (fcb->ea_xattr.Length == 0) {
+        Status = STATUS_NO_EAS_ON_FILE;
         goto end2;
+    }
+
+    Status = STATUS_SUCCESS;
 
     if (IrpSp->Parameters.QueryEa.EaList) {
         FILE_FULL_EA_INFORMATION *ea, *out;
@@ -5555,8 +5570,10 @@ NTSTATUS __stdcall drv_query_ea(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
             ULONG i;
 
             for (i = 0; i < index; i++) {
-                if (ea->NextEntryOffset == 0) // last item
+                if (ea->NextEntryOffset == 0) { // last item
+                    Status = STATUS_NO_MORE_EAS;
                     goto end2;
+                }
 
                 ea = (FILE_FULL_EA_INFORMATION*)(((uint8_t*)ea) + ea->NextEntryOffset);
             }
