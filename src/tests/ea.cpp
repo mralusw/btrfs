@@ -119,7 +119,7 @@ static vector<varbuf<FILE_FULL_EA_INFORMATION>> read_ea(HANDLE h) {
 }
 
 template<size_t N>
-static unique_handle create_file_ea(const u16string_view& path, ACCESS_MASK access, ULONG atts, ULONG share,
+static unique_handle create_file_ea(u16string_view path, ACCESS_MASK access, ULONG atts, ULONG share,
                                     ULONG dispo, ULONG options, ULONG_PTR exp_info, optional<uint64_t> allocation,
                                     const array<pair<string_view, string_view>, N>& eas) {
     NTSTATUS Status;
@@ -1233,5 +1233,31 @@ void test_ea(const u16string& dir) {
         });
 
         h.reset();
+    }
+
+    test("Open volume", [&]() {
+        auto colon = dir.find(u":");
+
+        if (colon == string::npos)
+            throw runtime_error("Unable to extract volume path from directory.");
+
+        auto vol = dir.substr(0, colon + 1);
+
+        h = create_file(vol, FILE_WRITE_EA | FILE_READ_EA, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        FILE_OPEN, 0, FILE_OPENED);
+    });
+
+    if (h) {
+        test("Try to write EA on volume", [&]() {
+            exp_status([&]() {
+                write_ea(h.get(), "HELLO", "world", true);
+            }, STATUS_INVALID_PARAMETER);
+        });
+
+        test("Try to read EA on volume", [&]() {
+            exp_status([&]() {
+                read_ea(h.get());
+            }, STATUS_INVALID_PARAMETER);
+        });
     }
 }

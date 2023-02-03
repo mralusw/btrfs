@@ -100,8 +100,17 @@ of the box on modern versions of Windows.
 If you using Windows 10 and have Secure Boot enabled, you may have to make a Registry
 change in order for the driver to be loaded - see [below](#secureboot).
 
-There's also a [Chocolatey package](https://chocolatey.org/packages/winbtrfs) available -
-if you have Chocolatey installed, try running `choco install winbtrfs`.
+WinBtrfs is also available on the following package managers:
+
+* [Chocolatey](https://chocolatey.org/packages/winbtrfs)
+```
+choco install winbtrfs
+```
+* [Scoop](https://scoop.sh/#/apps?q=%22winbtrfs-np%22&s=0&d=1&o=true)
+```
+scoop bucket add nonportable
+scoop install winbtrfs-np
+```
 
 Uninstalling
 ------------
@@ -266,6 +275,14 @@ partition type from 83 to 7.
 
 Changelog
 ---------
+
+v1.8.1 (2022-08-23):
+* Fixed use-after-free when flushing
+* Fixed crash when opening volume when AppLocker installed
+* Compression now disabled for no-COW files, as on Linux
+* Flushing now scales better on very fast drives
+* Fixed small files getting padded to 4,096 bytes by lazy writer
+* Added NoDataCOW registry option
 
 v1.8 (2022-03-12):
 * Added minimal support for fs-verity
@@ -612,6 +629,9 @@ missing. You are strongly advised not to enable this unless you need to.
 * `NoRootDir` (DWORD): if you have changed your default subvolume, either natively or by a registry option,
 there will be a hidden directory called $Root which points to where the root would normally be. Set this
 value to 1 to prevent this appearing.
+
+* `NoDataCOW` (DWORD): set this to 1 to disable copy-on-write for new files. This is the equivalent of the
+`nodatacow` flag on Linux.
 
 Contact
 -------

@@ -16,7 +16,10 @@
  * along with WinBtrfs.  If not, see <http://www.gnu.org/licenses/>. */
 
 #include "test.h"
+
+#define NOGDI
 #include <wincon.h>
+
 #include <winsvc.h>
 #include <winver.h>
 #include <functional>
@@ -28,7 +31,7 @@ enum fs_type fstype;
 
 static unsigned int num_tests_run, num_tests_passed;
 
-unique_handle create_file(const u16string_view& path, ACCESS_MASK access, ULONG atts, ULONG share,
+unique_handle create_file(u16string_view path, ACCESS_MASK access, ULONG atts, ULONG share,
                           ULONG dispo, ULONG options, ULONG_PTR exp_info, optional<uint64_t> allocation) {
     NTSTATUS Status;
     HANDLE h;
@@ -293,21 +296,24 @@ template vector<varbuf<FILE_ID_EXTD_BOTH_DIR_INFORMATION>> query_dir(const u16st
 template vector<varbuf<FILE_NAMES_INFORMATION>> query_dir(const u16string& dir, u16string_view filter);
 template vector<varbuf<FILE_REPARSE_POINT_INFORMATION>> query_dir(const u16string& dir, u16string_view filter);
 
-template<typename T, typename... Args>
-void _print(const T& s, Args&&... args) {
 #if __has_include(<format>)
-    auto msg = std::format(s, std::forward<Args>(args)...);
-#else
-    auto msg = fmt::format(s, std::forward<Args>(args)...);
-#endif
+
+template<typename... Args>
+void print(string_view s, Args&&... args) {
+    auto msg = std::vformat(s, std::make_format_args(args...));
 
     cout << msg;
 }
 
-#if __has_include(<format>)
-#define print(s, ...) _print(s, ##__VA_ARGS__)
 #else
-#define print(s, ...) _print(FMT_COMPILE(s), ##__VA_ARGS__)
+
+template<typename... Args>
+void print(fmt::format_string<Args...> s, Args&&... args) {
+    auto msg = fmt::format(s, std::forward<Args>(args)...);
+
+    cout << msg;
+}
+
 #endif
 
 void test(const string& msg, const function<void()>& func) {
@@ -418,7 +424,7 @@ void disable_token_privileges(HANDLE token) {
         throw ntstatus_error(Status);
 }
 
-string u16string_to_string(const u16string_view& sv) {
+string u16string_to_string(u16string_view sv) {
     if (sv.empty())
         return "";
 
@@ -434,7 +440,7 @@ string u16string_to_string(const u16string_view& sv) {
     return s;
 }
 
-static void do_tests(const u16string_view& name, const u16string& dir) {
+static void do_tests(u16string_view name, const u16string& dir) {
     auto token = open_process_token(NtCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_DEFAULT |
                                                         TOKEN_DUPLICATE | TOKEN_QUERY);
 
@@ -555,7 +561,7 @@ static u16string to_u16string(time_t n) {
     return u16string(s.rbegin(), s.rend());
 }
 
-static bool fs_driver_path(HANDLE h, const u16string_view& driver) {
+static bool fs_driver_path(HANDLE h, u16string_view driver) {
     NTSTATUS Status;
     IO_STATUS_BLOCK iosb;
     vector<uint8_t> buf(offsetof(FILE_FS_DRIVER_PATH_INFORMATION, DriverName) + (driver.size() * sizeof(char16_t)));

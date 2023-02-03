@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(btrfs VERSION 1.8.0)
+project(btrfs VERSION 1.8.1)
 
 option(WITH_TEST "Compile test program" ON)
 
@@ -316,12 +316,7 @@ endif()
 # test.exe
 
 if(WITH_TEST)
-    if(MSVC AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.21)
-        set(CMAKE_CXX_STANDARD 23) # /std:c++latest
-    else()
-        set(CMAKE_CXX_STANDARD 20)
-    endif()
-
+    set(CMAKE_CXX_STANDARD 20)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
     if(NOT MSVC OR MSVC_VERSION LESS 1929)
